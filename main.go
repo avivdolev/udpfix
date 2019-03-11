@@ -36,7 +36,7 @@ type udppacket struct {
 	eth     layers.Ethernet
 	ip      layers.IPv4
 	udp     layers.UDP
-	payload gopacket.Payload
+	payload []byte
 }
 
 func init() {
@@ -81,7 +81,6 @@ func main() {
 		&inpacket.eth,
 		&inpacket.ip,
 		&inpacket.udp,
-		&inpacket.payload,
 	)
 
 	c := make(chan udppacket, 100)
@@ -95,7 +94,7 @@ func main() {
 				}
 				continue
 			}
-			payload := getpayload(inpacket.payload)
+			// payload := getpayload(inpacket.payload)
 			parser.IgnoreUnsupported = true
 			if err := parser.DecodeLayers(p, &decoded); err != nil {
 				log.Println("decode err: ", err)
@@ -104,7 +103,7 @@ func main() {
 				eth:     inpacket.eth,
 				ip:      inpacket.ip,
 				udp:     inpacket.udp,
-				payload: gopacket.Payload(payload),
+				payload: inpacket.udp.LayerPayload(),
 			}
 		}
 	}()
@@ -126,7 +125,7 @@ func main() {
 		case p := <-c:
 			p.ip.SrcIP = nip
 			p.udp.SetNetworkLayerForChecksum(&p.ip)
-			if err := gopacket.SerializeLayers(buff, opts, &p.eth, &p.ip, &p.udp, &p.payload); err != nil {
+			if err := gopacket.SerializeLayers(buff, opts, &p.eth, &p.ip, &p.udp, gopacket.Payload(p.payload)); err != nil {
 				log.Println("serial err: ", err)
 				continue
 			}
@@ -141,10 +140,4 @@ func main() {
 		}
 	}
 
-}
-
-func getpayload(in gopacket.Payload) []byte {
-	a := make([]byte, len(in))
-	copy(a, []byte(in))
-	return a
 }
