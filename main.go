@@ -25,6 +25,7 @@ var (
 	iface  = flag.String("i", "en4", "name/ip of local nic")
 	osrcip = flag.String("osrc", "192.168.1.1", "original source ip address")
 	nsrcip = flag.String("nsrc", "192.168.1.200", "new source ip address")
+	sport  = flag.Int("sport", 0, "source port")
 	oip    net.IP
 	nip    net.IP
 	h      *pcap.Handle
@@ -42,7 +43,7 @@ type udppacket struct {
 func init() {
 	flag.Parse()
 	oip, nip = net.ParseIP(*osrcip), net.ParseIP(*nsrcip)
-	if oip == nil || nip == nil {
+	if oip == nil || nip == nil || *sport == 0 {
 		log.Printf("Must provide original and new source ip.\n")
 		flag.Usage()
 		os.Exit(1)
@@ -124,6 +125,7 @@ func main() {
 		select {
 		case p := <-c:
 			p.ip.SrcIP = nip
+			p.udp.SrcPort = layers.UDPPort(uint16(*sport))
 			p.udp.SetNetworkLayerForChecksum(&p.ip)
 			if err := gopacket.SerializeLayers(buff, opts, &p.eth, &p.ip, &p.udp, gopacket.Payload(p.payload)); err != nil {
 				log.Println("serial err: ", err)
