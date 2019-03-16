@@ -33,6 +33,12 @@ var (
 	enter  = bufio.NewScanner(os.Stdin)
 )
 
+// E is a conveniecy for error printing
+type E struct {
+	error
+	string
+}
+
 type udppacket struct {
 	eth     layers.Ethernet
 	ip      layers.IPv4
@@ -51,7 +57,7 @@ func init() {
 	oip, nip = oip.To4(), nip.To4()
 
 	if err := local.set(*iface); err != nil {
-		log.Fatalf("error with local interface: %+v", err)
+		log.Fatalf("error with local interface: %+v", E{err, err.Error()})
 	}
 }
 
@@ -61,7 +67,7 @@ func main() {
 	// open sniffer
 	h, err = pcap.OpenLive(local.DevName, snaplen, promiscuous, timeout)
 	if err != nil {
-		log.Fatalf("could not open capture device: %+v", err)
+		log.Fatalf("could not open capture device: %+v", E{err, err.Error()})
 	}
 	defer h.Close()
 
