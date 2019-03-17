@@ -8,6 +8,7 @@ import (
 	logger "log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -19,18 +20,17 @@ const (
 	snaplen     = 1 << 16
 	promiscuous = true
 	timeout     = pcap.BlockForever
+	maxTTL      = 10 * time.Minute
 )
 
 var (
-	iface  = flag.String("i", "en4", "name/ip of local nic")
-	osrcip = flag.String("osrc", "192.168.1.1", "original source ip address")
-	nsrcip = flag.String("nsrc", "192.168.1.200", "new source ip address")
-	sport  = flag.Int("sport", 0, "source port")
-	oip    net.IP
-	nip    net.IP
-	h      *pcap.Handle
-	local  localini
-	enter  = bufio.NewScanner(os.Stdin)
+	rx       = flag.String("rx", "en4", "name/ip of receiving nic")
+	tx       = flag.String("tx", "en4", "name/ip of transmitting nic")
+	nsrcip   = flag.String("nsrc", "192.168.1.200", "new source ip address for transmitting")
+	nip      net.IP
+	htx, hrx *pcap.Handle
+	ltx, lrx localini
+	enter    = bufio.NewScanner(os.Stdin)
 )
 
 // E is a conveniecy for error printing
@@ -48,37 +48,76 @@ type udppacket struct {
 
 func init() {
 	flag.Parse()
-	oip, nip = net.ParseIP(*osrcip), net.ParseIP(*nsrcip)
-	if oip == nil || nip == nil || *sport == 0 {
-		log.Printf("Must provide original and new source ip.\n")
+	nip = net.ParseIP(*nsrcip)
+	if nip == nil {
+		log.Printf("Must provide new source ip.\n")
 		flag.Usage()
 		os.Exit(1)
 	}
-	oip, nip = oip.To4(), nip.To4()
+	nip = nip.To4()
 
-	if err := local.set(*iface); err != nil {
-		log.Fatalf("error with local interface: %+v", E{err, err.Error()})
+	if err := ltx.set(*tx); err != nil {
+		log.Fatalf("error setting local transmitting interface: %+v", E{err, err.Error()})
+	}
+	if err := lrx.set(*rx); err != nil {
+		log.Fatalf("error setting local receiving interface: %+v", E{err, err.Error()})
 	}
 }
 
 func main() {
-	log := logger.New(os.Stdout, "", logger.LstdFlags)
+	log := logger.New(os.Stdout, "[UDPFIX]", logger.LstdFlags)
 	var err error
-	// open sniffer
-	h, err = pcap.OpenLive(local.DevName, snaplen, promiscuous, timeout)
-	if err != nil {
-		log.Fatalf("could not open capture device: %+v", E{err, err.Error()})
-	}
-	defer h.Close()
 
-	// set capture filter
-	bpf := "udp and (ip host " + oip.String() + ")"
-	if err := h.SetBPFFilter(bpf); err != nil {
-		log.Fatal("error with bpf: ", err)
+	// open tx rx sniffers
+	htx, err := pcap.OpenLive(ltx.DevName, snaplen, promiscuous, timeout)
+	if err != nil {
+		log.Fatalf("could not open capture device (transmitting): %+v", E{err, err.Error()})
 	}
-	// if err := h.SetDirection(pcap.DirectionOut); err != nil {
-	// 	log.Fatal("could net set direction: ", err)
-	// }
+	defer htx.Close()
+	hrx, err = pcap.OpenLive(lrx.DevName, snaplen, promiscuous, timeout)
+	if err != nil {
+		log.Fatalf("could not open capture device (receiving): %+v", E{err, err.Error()})
+	}
+	defer hrx.Close()
+
+	// set capture filters
+	bpftx := "udp and (ip src host " + ltx.IP.String() + ")"
+	if err := htx.SetBPFFilter(bpftx); err != nil {
+		log.Fatalf("error with tx bpf: %+v\n", E{err, err.Error()})
+	}
+	bpfrx := "udp and (ip dst host " + lrx.IP.String() + ")"
+	if err := hrx.SetBPFFilter(bpfrx); err != nil {
+		log.Fatalf("error with rx bpf: %+v\n", E{err, err.Error()})
+	}
+
+	// start rx sniffing loop
+	m := newTTLmap(maxTTL)
+	go func() {
+		var (
+			rxip  layers.IPv4
+			rxudp layers.UDP
+		)
+		decoded := make([]gopacket.LayerType, 0, 2)
+		parser := gopacket.NewDecodingLayerParser(
+			layers.LayerTypeEthernet,
+			&rxip,
+			&rxudp,
+		)
+		parser.IgnoreUnsupported = true
+		for {
+			p, _, err := hrx.ZeroCopyReadPacketData()
+			if err != nil {
+				if err == io.EOF {
+					return
+				}
+				continue
+			}
+			if err := parser.DecodeLayers(p, &decoded); err != nil {
+				continue
+			}
+			m.putPort(newMKey(rxip.SrcIP, rxudp.SrcPort), rxudp.DstPort)
+		}
+	}()
 
 	inpacket := udppacket{}
 	decoded := make([]gopacket.LayerType, 0, 10)
@@ -89,12 +128,13 @@ func main() {
 		&inpacket.ip,
 		&inpacket.udp,
 	)
+	parser.IgnoreUnsupported = true
 
 	c := make(chan udppacket, 100)
 
 	go func() {
 		for {
-			p, _, err := h.ReadPacketData()
+			p, _, err := htx.ReadPacketData()
 			if err != nil {
 				if err == io.EOF {
 					return
@@ -102,7 +142,6 @@ func main() {
 				continue
 			}
 			// payload := getpayload(inpacket.payload)
-			parser.IgnoreUnsupported = true
 			if err := parser.DecodeLayers(p, &decoded); err != nil {
 				log.Println("decode err: ", err)
 			}
@@ -126,19 +165,24 @@ func main() {
 		ComputeChecksums: true,
 		FixLengths:       true,
 	}
-	log.Printf("listening for udp on address %s, fix to address %s", oip.String(), nip.String())
+	log.Printf("receiving on: %s transmitting on: %s new source address: %s\n", lrx.IP, ltx.IP, nip)
 	for {
 		select {
 		case p := <-c:
 			p.ip.SrcIP = nip
-			p.udp.SrcPort = layers.UDPPort(uint16(*sport))
+			// sport := m.getPort(newMKey(p.ip.DstIP, p.udp.DstPort))
+			sport, ok := m.m[newMKey(p.ip.DstIP, p.udp.DstPort)]
+			if !ok || sport.port == 0 {
+				continue
+			}
+			p.udp.SrcPort = sport.port
 			p.udp.SetNetworkLayerForChecksum(&p.ip)
 			if err := gopacket.SerializeLayers(buff, opts, &p.eth, &p.ip, &p.udp, gopacket.Payload(p.payload)); err != nil {
 				log.Println("serial err: ", err)
 				continue
 			}
 
-			if err := h.WritePacketData(buff.Bytes()); err != nil {
+			if err := htx.WritePacketData(buff.Bytes()); err != nil {
 				log.Println("sending err: ", err)
 				continue
 			}

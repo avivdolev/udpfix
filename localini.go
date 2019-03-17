@@ -30,9 +30,13 @@ func (l *localini) set(s string) error {
 		if addrs == nil {
 			return fmt.Errorf("no address found for interface: %s details: %+v", s, l)
 		}
-		l.IP, _, err = net.ParseCIDR(addrs[0].String())
-		if err != nil {
-			return err
+		for _, ipa := range addrs {
+			ip, _, err := net.ParseCIDR(ipa.String())
+			if ip.To4() == nil || err != nil {
+				continue
+			}
+			l.IP = ip
+			break
 		}
 	default:
 		l.IP = ip
@@ -78,6 +82,7 @@ func (l *localini) findMAC() error {
 			ip, _, _ := net.ParseCIDR(addr.String())
 			if l.IP.Equal(ip) {
 				l.MAC, l.Name = ifi.HardwareAddr, ifi.Name
+				return nil
 			}
 		}
 	}

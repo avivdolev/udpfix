@@ -9,10 +9,6 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-const (
-	maxTTL = 10 * time.Minute
-)
-
 type mkey struct {
 	ip, port gopacket.Endpoint
 }
@@ -29,26 +25,19 @@ type mval struct {
 	access int64
 }
 
-// func (k1 *mkey) Equal(k2 mkey) bool {
-// 	if k1.ip.FastHash() == k2.ip.FastHash() {
-// 		return k1.port.FastHash() == k2.port.FastHash()
-// 	}
-// 	return false
-// }
-
 // TTLmap is a map with item expirety and renewal
 // a new map fires goroutine to clean expired items
 type TTLmap struct {
 	m map[mkey]*mval
-	l sync.Mutex
+	l sync.RWMutex
 }
 
-func newTTLmap(ttl int) (m *TTLmap) {
+func newTTLmap(ttl time.Duration) (m *TTLmap) {
 	m = &TTLmap{
 		m: make(map[mkey]*mval),
 	}
 	go func() {
-		t := time.NewTicker(time.Duration(ttl))
+		t := time.NewTicker(ttl)
 		defer t.Stop()
 		for tick := range t.C {
 			m.l.Lock()
@@ -64,8 +53,8 @@ func newTTLmap(ttl int) (m *TTLmap) {
 }
 
 func (m *TTLmap) getPort(k mkey) layers.UDPPort {
-	m.l.Lock()
-	defer m.l.Unlock()
+	m.l.RLock()
+	defer m.l.RUnlock()
 	v, ok := m.m[k]
 	if !ok {
 		return 0
