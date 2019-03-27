@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"flag"
 	"io"
-	"log"
 	logger "log"
 	"net"
 	"os"
@@ -24,13 +23,14 @@ const (
 )
 
 var (
-	rx       = flag.String("rx", "en4", "name/ip of receiving nic")
-	tx       = flag.String("tx", "en4", "name/ip of transmitting nic")
+	rx       = flag.String("rx", "DioFromCell", "name/ip of receiving nic")
+	tx       = flag.String("tx", "DioToCell", "name/ip of transmitting nic")
 	nsrcip   = flag.String("nsrc", "192.168.1.200", "new source ip address for transmitting")
 	nip      net.IP
 	htx, hrx *pcap.Handle
 	ltx, lrx localini
 	enter    = bufio.NewScanner(os.Stdin)
+	log      *logger.Logger
 )
 
 // E is a conveniecy for error printing
@@ -48,6 +48,7 @@ type udppacket struct {
 
 func init() {
 	flag.Parse()
+	log = logger.New(os.Stdout, "[UDPFIX]", logger.LstdFlags)
 	nip = net.ParseIP(*nsrcip)
 	if nip == nil {
 		log.Printf("Must provide new source ip.\n")
@@ -65,7 +66,6 @@ func init() {
 }
 
 func main() {
-	log := logger.New(os.Stdout, "[UDPFIX]", logger.LstdFlags)
 	var err error
 
 	// open tx rx sniffers
@@ -85,7 +85,7 @@ func main() {
 	if err := htx.SetBPFFilter(bpftx); err != nil {
 		log.Fatalf("error with tx bpf: %+v\n", E{err, err.Error()})
 	}
-	bpfrx := "udp and (ip dst host " + lrx.IP.String() + ")"
+	bpfrx := "udp and (ip dst host " + lrx.IP.String() + ") and (ip src host not " + nip.String() + ")"
 	if err := hrx.SetBPFFilter(bpfrx); err != nil {
 		log.Fatalf("error with rx bpf: %+v\n", E{err, err.Error()})
 	}
@@ -93,13 +93,14 @@ func main() {
 	// start rx sniffing loop
 	m := newTTLmap(maxTTL)
 	go func() {
-		var (
-			rxip  layers.IPv4
-			rxudp layers.UDP
-		)
+
+		rxip := layers.IPv4{}
+		rxudp := layers.UDP{}
+
 		decoded := make([]gopacket.LayerType, 0, 2)
 		parser := gopacket.NewDecodingLayerParser(
 			layers.LayerTypeEthernet,
+			&layers.Ethernet{},
 			&rxip,
 			&rxudp,
 		)
@@ -165,7 +166,7 @@ func main() {
 		ComputeChecksums: true,
 		FixLengths:       true,
 	}
-	log.Printf("receiving on: %s transmitting on: %s new source address: %s\n", lrx.IP, ltx.IP, nip)
+	log.Printf("receiving on: %s transmitting on: %s new source address: %s\n", lrx.IP.String(), ltx.IP.String(), nip.String())
 	for {
 		select {
 		case p := <-c:
