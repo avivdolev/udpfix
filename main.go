@@ -19,7 +19,7 @@ const (
 	snaplen     = 1 << 16
 	promiscuous = true
 	timeout     = pcap.BlockForever
-	maxTTL      = 10 * time.Minute
+	maxTTL      = 1 * time.Hour
 )
 
 var (
@@ -171,8 +171,8 @@ func main() {
 		select {
 		case p := <-c:
 			p.ip.SrcIP = nip
-			// sport := m.getPort(newMKey(p.ip.DstIP, p.udp.DstPort))
-			sport, ok := m.m[newMKey(p.ip.DstIP, p.udp.DstPort)]
+
+			sport, ok := m.getPort(newMKey(p.ip.DstIP, p.udp.DstPort))
 			if !ok || sport.port == 0 {
 				continue
 			}

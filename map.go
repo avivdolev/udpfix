@@ -29,7 +29,7 @@ type mval struct {
 // a new map fires goroutine to clean expired items
 type TTLmap struct {
 	m map[mkey]*mval
-	l sync.RWMutex
+	l sync.Mutex
 }
 
 func newTTLmap(ttl time.Duration) (m *TTLmap) {
@@ -52,15 +52,11 @@ func newTTLmap(ttl time.Duration) (m *TTLmap) {
 	return
 }
 
-func (m *TTLmap) getPort(k mkey) layers.UDPPort {
-	m.l.RLock()
-	defer m.l.RUnlock()
-	v, ok := m.m[k]
-	if !ok {
-		return 0
-	}
-	v.access = time.Now().Unix()
-	return v.port
+func (m *TTLmap) getPort(k mkey) (v *mval, ok bool) {
+	m.l.Lock()
+	defer m.l.Unlock()
+	v, ok = m.m[k]
+	return
 }
 
 func (m *TTLmap) putPort(k mkey, p layers.UDPPort) {
